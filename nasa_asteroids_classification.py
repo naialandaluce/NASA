@@ -415,7 +415,7 @@ print("\nLevel 1 dataset saved to 'nasa_asteroids_level1_difficulty.csv'")
 Six redundant diameter measurements (in meters, miles, and feet)
 Three highly correlated orbital parameters (Jupiter Tisserand Invariant, Aphelion Distance, and Mean Motion)
 
-# - Identifying feature importance to create additional difficulty levels
+# - Model Evaluation **Identifying** feature importance to create additional difficulty levels
 """
 
 from sklearn.ensemble import RandomForestClassifier
@@ -531,7 +531,7 @@ Level 4: 10 features (kept only the 10 least important features)
 
 This creates an excellent progression of challenge levels. Level 4 will be particularly difficult as it uses only features with minimal predictive power.
 
-# - Evaluate Model Performance
+# - Evaluate Model Performance (Initial model comparison across difficulty levels)
 """
 
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier
@@ -793,7 +793,9 @@ Which models benefit most from class balancing
 Whether SMOTE is more effective at higher difficulty levels (with fewer features)
 """
 
+# Modified SMOTE implementation that handles ultra-minority classes
 from imblearn.over_sampling import SMOTE
+from collections import Counter
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier
 from sklearn.tree import DecisionTreeClassifier
@@ -882,7 +884,7 @@ for level_name, df in levels.items():
 
     # 2. Apply SMOTE for imbalance mitigation
     print("  Applying SMOTE for class balance:")
-    smote = SMOTE(random_state=42)
+    smote = SMOTE(random_state=42, k_neighbors=4)
     X_train_smote, y_train_smote = smote.fit_resample(X_train, y_train)
 
     print(f"    Original class distribution: {pd.Series(y_train).value_counts().to_dict()}")
@@ -934,23 +936,40 @@ for method in ['Standard', 'SMOTE']:
 standard_df = results_df[results_df['Method'] == 'Standard']
 smote_df = results_df[results_df['Method'] == 'SMOTE']
 
-improvement = pd.merge(
-    standard_df, smote_df,
-    on=['Model', 'Difficulty'],
-    suffixes=('_std', '_smote')
-)
+# Make sure the DataFrames are not empty before merging
+if not standard_df.empty and not smote_df.empty:
+    improvement = pd.merge(
+        standard_df, smote_df,
+        on=['Model', 'Difficulty'],
+        suffixes=('_std', '_smote')
+    )
 
-for metric in ['Accuracy', 'F1 Score', 'MCC']:
-    improvement[f'{metric}_improvement'] = improvement[f'{metric}_smote'] - improvement[f'{metric}_std']
-    improvement[f'{metric}_pct_improvement'] = (improvement[f'{metric}_improvement'] / improvement[f'{metric}_std']) * 100
+    # Calculate improvements for each metric
+    for metric in ['Accuracy', 'F1 Score', 'MCC']:
+        improvement[f'{metric}_improvement'] = improvement[f'{metric}_smote'] - improvement[f'{metric}_std']
 
-improvement_summary = improvement.groupby(['Model', 'Difficulty'])[
-    'Accuracy_improvement', 'F1 Score_improvement', 'MCC_improvement',
-    'Accuracy_pct_improvement', 'F1 Score_pct_improvement', 'MCC_pct_improvement'
-].mean().reset_index()
+        # Avoid division by zero
+        improvement[f'{metric}_pct_improvement'] = improvement.apply(
+            lambda row: (row[f'{metric}_improvement'] / row[f'{metric}_std'] * 100)
+            if row[f'{metric}_std'] != 0 else float('nan'),
+            axis=1
+        )
 
-print("\nImprovement from SMOTE:")
-print(improvement_summary)
+    # Create a list of metrics to include in the groupby
+    metrics_to_include = [
+        'Accuracy_improvement', 'F1 Score_improvement', 'MCC_improvement',
+        'Accuracy_pct_improvement', 'F1 Score_pct_improvement', 'MCC_pct_improvement'
+    ]
+
+    # Group by Model and Difficulty, then calculate mean for the specified columns
+    improvement_summary = improvement.groupby(['Model', 'Difficulty'])[metrics_to_include].mean().reset_index()
+
+    print("\nImprovement from SMOTE:")
+    print(improvement_summary)
+else:
+    print("\nCannot calculate improvement - standard_df or smote_df is empty.")
+    print(f"Standard data shape: {standard_df.shape}")
+    print(f"SMOTE data shape: {smote_df.shape}")
 
 """# - Imbalance Analysis and Mitigation Techniques
 
@@ -991,8 +1010,6 @@ plt.title('Confusion Matrix - Imbalanced Data')
 plt.ylabel('True Label')
 plt.xlabel('Predicted Label')
 plt.show()
-
-"""# - Estandarizar/normalizar características numéricas"""
 
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
@@ -1090,8 +1107,6 @@ print("\nScaled values for 'Absolute Magnitude':")
 print(scaled_df['Absolute Magnitude'].head())
 
 
-
-"""# **3.- Class Imbalance Analysis and Mitigation**"""
 
 import numpy as np
 import pandas as pd
@@ -1420,3 +1435,392 @@ X_train_smote, y_train_smote = smote.fit_resample(X_train, y_train)
 
 print(f"Distribución después de SMOTE: {sorted(Counter(y_train_smote).items())}")
 
+"""# - 1. Hyperparameter Tuning (for extra credit)
+
+
+*   Use optuna for hyperparameter tuning using a pruner or a heuristic.
+
+*  Understand how Matthews Correlation Coefficient (MCC) can be used to measure the performance of the models and use it as an additional metric.  
+
+
+"""
+
+!pip install optuna
+
+# Import libraries
+import optuna
+from sklearn.model_selection import cross_val_score
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import matthews_corrcoef, make_scorer
+
+# Define objective function for optimization
+def objective(trial, X, y):
+    # Define parameter space for Random Forest
+    n_estimators = trial.suggest_int('n_estimators', 50, 300)
+    max_depth = trial.suggest_int('max_depth', 3, 30, log=True)
+    min_samples_split = trial.suggest_int('min_samples_split', 2, 20)
+    min_samples_leaf = trial.suggest_int('min_samples_leaf', 1, 10)
+    max_features = trial.suggest_categorical('max_features', ['sqrt', 'log2', None])
+
+    # Create model with suggested parameters
+    model = RandomForestClassifier(
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        min_samples_split=min_samples_split,
+        min_samples_leaf=min_samples_leaf,
+        max_features=max_features,
+        random_state=42
+    )
+
+    # Use MCC as scoring metric for cross-validation
+    mcc_scorer = make_scorer(matthews_corrcoef)
+
+    # Perform cross-validation
+    score = cross_val_score(
+        model, X, y,
+        scoring=mcc_scorer,
+        cv=5,
+        n_jobs=-1
+    ).mean()
+
+    return score
+
+# Run optimization for each difficulty level
+best_params = {}
+
+for level_name, df in levels.items():
+    print(f"\nOptimizing Random Forest for {level_name}...")
+
+    # Prepare data
+    X = df.drop(columns=['OrbitalType', 'RiskClass', 'ScientificPotential', 'Hazardous',
+                       'Close Approach Date', 'Orbiting Body', 'Orbit Determination Date',
+                       'Equinox'], errors='ignore')
+    y = df['OrbitalType']
+
+    # Create study and optimize
+    study = optuna.create_study(direction='maximize', pruner=optuna.pruners.MedianPruner())
+    study.optimize(lambda trial: objective(trial, X, y), n_trials=50)
+
+    # Store best parameters for this level
+    best_params[level_name] = study.best_params
+
+    # Print results
+    print(f"Best parameters: {study.best_params}")
+    print(f"Best MCC score: {study.best_value:.4f}")
+
+    # Visualize parameter importance (if matplotlib is available)
+    try:
+        optuna.visualization.plot_param_importances(study)
+    except:
+        print("Could not create visualization. Continue...")
+
+# Print summary of best parameters across levels
+print("\nBest parameters summary:")
+for level, params in best_params.items():
+    print(f"{level}: {params}")
+
+"""Análisis de los Resultados de Optimización de Hiperparámetros
+Nivel 1 (26 características - nivel base)
+
+- Mejores parámetros:
+
+  - n_estimators: 240 (número de árboles)
+  - max_depth: 11 (profundidad máxima de cada árbol)
+  - min_samples_split: 4 (mínimo de muestras para dividir un nodo)
+  - min_samples_leaf: 1 (mínimo de muestras en una hoja)
+  - max_features: None (usar todas las características disponibles)
+
+
+- Mejor puntuación MCC: 0.9980 (extremadamente alta)
+
+- Observación: En este nivel, con todas las características importantes disponibles, el modelo puede lograr un rendimiento casi perfecto. Los parámetros óptimos muestran una preferencia por un conjunto grande de árboles relativamente profundos que pueden usar todas las características disponibles.
+
+Nivel 2 (21 características - sin las 5 más importantes)
+
+- Mejores parámetros:
+
+  - n_estimators: 248 (similar al nivel 1)
+  - max_depth: 21 (casi el doble de profundidad que en el nivel 1)
+  - min_samples_split: 5 (ligeramente más restrictivo)
+  - min_samples_leaf: 5 (mucho más restrictivo que en el nivel 1)
+  - max_features: None (igual que en nivel 1)
+
+
+- Mejor puntuación MCC: 0.5025 (una caída significativa)
+- Observación: Al eliminar las 5 características más importantes, el rendimiento cae drásticamente (de 0.998 a 0.5025). Para compensar, el modelo óptimo utiliza árboles mucho más profundos y exige más muestras por hoja para evitar el sobreajuste.
+
+Nivel 3 (16 características - sin las 10 más importantes)
+
+- Mejores parámetros:
+
+  - n_estimators: 270 (más árboles que en niveles anteriores)
+  - max_depth: 15 (menos profundo que en nivel 2 pero más que en nivel 1)
+  - min_samples_split: 3 (menos restrictivo que en nivel 2)
+  - min_samples_leaf: 2 (menos restrictivo que en nivel 2)
+  - max_features: None (consistente con niveles anteriores)
+
+
+- Mejor puntuación MCC: 0.2522 (reducción adicional significativa)
+- Observación: Con solo 16 características, perdiendo las 10 más importantes, el rendimiento sigue deteriorándose. El modelo intenta compensar usando más árboles, pero la profundidad óptima es menor que en el nivel 2, posiblemente para evitar sobreajustarse a datos con menos información predictiva.
+
+Nivel 4 (10 características - solo las menos importantes)
+
+- Mejores parámetros:
+
+  - n_estimators: 77 (muchos menos árboles)
+  - max_depth: 10 (menos profundo)
+  - min_samples_split: 12 (mucho más restrictivo)
+  - min_samples_leaf: 9 (extremadamente restrictivo)
+  - max_features: 'log2' (limita las características por árbol)
+
+
+- Mejor puntuación MCC: 0.0871 (extremadamente baja)
+- Observación: Con solo las 10 características menos importantes, el rendimiento colapsa. El modelo óptimo cambia drásticamente: utiliza muchos menos árboles, limita las características por árbol (log2) y aplica restricciones mucho más severas en splits y hojas para evitar el sobreajuste.
+
+Tendencias Generales:
+
+- Número de árboles (n_estimators): Aumenta en los niveles 1-3 (240 → 248 → 270) pero cae drásticamente en el nivel 4 (77), sugiriendo que con características débiles, más árboles no ayudan y pueden incluso perjudicar.
+- Profundidad (max_depth): Aumenta significativamente del nivel 1 al 2 (11 → 21) pero luego disminuye gradualmente (21 → 15 → 10), indicando que árboles más profundos son útiles cuando faltan algunas características importantes, pero no cuando la información predictiva es mínima.
+- Restricciones de muestra: A medida que disminuye la calidad de las características, aumentan los valores de min_samples_split y min_samples_leaf, confirmando que se necesita más regularización para evitar el sobreajuste con características débiles.
+- Selección de características (max_features): Permanece como None (todas las características) hasta el nivel 4, donde cambia a 'log2', lo que indica que con características muy débiles, es mejor limitar cuántas considera cada árbol.
+
+# -  Código para generar la matriz de confusión del mejor modelo optimizado
+"""
+
+# Implementar y evaluar el mejor modelo optimizado (Random Forest) para el nivel 1
+from sklearn.metrics import confusion_matrix, classification_report
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Cargar el dataset del nivel 1
+df_level1 = pd.read_csv('nasa_asteroids_level1_difficulty.csv')
+
+# Preparar los datos
+X = df_level1.drop(columns=['OrbitalType', 'RiskClass', 'ScientificPotential', 'Hazardous',
+                     'Close Approach Date', 'Orbiting Body', 'Orbit Determination Date',
+                     'Equinox'], errors='ignore')
+y = df_level1['OrbitalType']
+
+# Dividir en entrenamiento y prueba
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+
+# Crear el modelo con los mejores parámetros encontrados con Optuna
+best_rf_model = RandomForestClassifier(
+    n_estimators=240,
+    max_depth=11,
+    min_samples_split=4,
+    min_samples_leaf=1,
+    max_features=None,
+    random_state=42
+)
+
+# Entrenar el modelo
+best_rf_model.fit(X_train, y_train)
+
+# Predecir en el conjunto de prueba
+y_pred = best_rf_model.predict(X_test)
+
+# Obtener clases únicas en orden para la matriz de confusión
+class_names = sorted(y.unique())
+
+# Calcular la matriz de confusión
+cm = confusion_matrix(y_test, y_pred, labels=class_names)
+
+# Calcular la matriz de confusión normalizada (por filas)
+cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+
+# Visualizar la matriz de confusión
+plt.figure(figsize=(12, 10))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+            xticklabels=class_names, yticklabels=class_names)
+plt.title('Matriz de Confusión - Random Forest Optimizado (Level 1)', fontsize=15)
+plt.ylabel('Etiqueta Real', fontsize=12)
+plt.xlabel('Etiqueta Predicha', fontsize=12)
+plt.xticks(rotation=45)
+plt.yticks(rotation=45)
+plt.tight_layout()
+plt.savefig('confusion_matrix_optimized_rf.png')
+plt.show()
+
+# Visualizar la matriz de confusión normalizada
+plt.figure(figsize=(12, 10))
+sns.heatmap(cm_normalized, annot=True, fmt='.2f', cmap='Blues',
+            xticklabels=class_names, yticklabels=class_names)
+plt.title('Matriz de Confusión Normalizada - Random Forest Optimizado (Level 1)', fontsize=15)
+plt.ylabel('Etiqueta Real', fontsize=12)
+plt.xlabel('Etiqueta Predicha', fontsize=12)
+plt.xticks(rotation=45)
+plt.yticks(rotation=45)
+plt.tight_layout()
+plt.savefig('confusion_matrix_normalized_optimized_rf.png')
+plt.show()
+
+# Imprimir el informe de clasificación
+print("\nInforme de Clasificación para Random Forest Optimizado:")
+print(classification_report(y_test, y_pred))
+
+# Analizar específicamente la clase Outer-Solar
+outer_solar_idx = list(class_names).index('Outer-Solar')
+if outer_solar_idx in range(len(class_names)):
+    # Precisión para Outer-Solar
+    outer_solar_precision = cm[outer_solar_idx, outer_solar_idx] / cm[:, outer_solar_idx].sum() if cm[:, outer_solar_idx].sum() > 0 else 0
+    # Recall para Outer-Solar
+    outer_solar_recall = cm[outer_solar_idx, outer_solar_idx] / cm[outer_solar_idx, :].sum() if cm[outer_solar_idx, :].sum() > 0 else 0
+
+    print("\nAnálisis de la clase ultra-minoritaria 'Outer-Solar':")
+    print(f"Número total de muestras 'Outer-Solar' en el conjunto de prueba: {cm[outer_solar_idx, :].sum()}")
+    print(f"Correctamente clasificados: {cm[outer_solar_idx, outer_solar_idx]}")
+    print(f"Precisión: {outer_solar_precision:.4f}")
+    print(f"Recall: {outer_solar_recall:.4f}")
+
+    # Mostrar con qué clases se confunde Outer-Solar
+    if cm[outer_solar_idx, :].sum() > 0:
+        confused_with = [(class_names[i], cm[outer_solar_idx, i])
+                         for i in range(len(class_names))
+                         if i != outer_solar_idx and cm[outer_solar_idx, i] > 0]
+
+        if confused_with:
+            print("\n'Outer-Solar' se confunde principalmente con:")
+            for class_name, count in confused_with:
+                print(f"- {class_name}: {count} muestras ({count/cm[outer_solar_idx, :].sum()*100:.2f}%)")
+        else:
+            print("\n'Outer-Solar' no se confunde con ninguna otra clase.")
+
+"""# - Código para optimizar Gradient Boosting (segundo modelo)"""
+
+# Optimización de hiperparámetros para Gradient Boosting usando Optuna
+import optuna
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.model_selection import cross_val_score
+from sklearn.metrics import matthews_corrcoef, make_scorer
+
+# Definir función objetivo para optimización de Gradient Boosting
+def objective_gb(trial, X, y):
+    # Definir espacio de parámetros para Gradient Boosting
+    n_estimators = trial.suggest_int('n_estimators', 50, 300)
+    learning_rate = trial.suggest_float('learning_rate', 0.01, 0.3, log=True)
+    max_depth = trial.suggest_int('max_depth', 3, 15)
+    min_samples_split = trial.suggest_int('min_samples_split', 2, 20)
+    min_samples_leaf = trial.suggest_int('min_samples_leaf', 1, 10)
+    subsample = trial.suggest_float('subsample', 0.6, 1.0)
+
+    # Crear modelo con los parámetros sugeridos
+    model = GradientBoostingClassifier(
+        n_estimators=n_estimators,
+        learning_rate=learning_rate,
+        max_depth=max_depth,
+        min_samples_split=min_samples_split,
+        min_samples_leaf=min_samples_leaf,
+        subsample=subsample,
+        random_state=42
+    )
+
+    # Utilizar MCC como métrica para validación cruzada
+    mcc_scorer = make_scorer(matthews_corrcoef)
+
+    # Realizar validación cruzada
+    score = cross_val_score(
+        model, X, y,
+        scoring=mcc_scorer,
+        cv=5,
+        n_jobs=-1
+    ).mean()
+
+    return score
+
+# Optimizar Gradient Boosting para cada nivel de dificultad
+best_gb_params = {}
+
+for level_name, df in levels.items():
+    print(f"\nOptimizando Gradient Boosting para {level_name}...")
+
+    # Preparar datos
+    X = df.drop(columns=['OrbitalType', 'RiskClass', 'ScientificPotential', 'Hazardous',
+                       'Close Approach Date', 'Orbiting Body', 'Orbit Determination Date',
+                       'Equinox'], errors='ignore')
+    y = df['OrbitalType']
+
+    # Crear estudio y optimizar
+    study = optuna.create_study(direction='maximize', pruner=optuna.pruners.MedianPruner())
+    study.optimize(lambda trial: objective_gb(trial, X, y), n_trials=30)  # Reducido a 30 trials para ahorrar tiempo
+
+    # Guardar mejores parámetros para este nivel
+    best_gb_params[level_name] = study.best_params
+
+    # Imprimir resultados
+    print(f"Mejores parámetros: {study.best_params}")
+    print(f"Mejor puntuación MCC: {study.best_value:.4f}")
+
+# Imprimir resumen de mejores parámetros
+print("\nResumen de mejores parámetros para Gradient Boosting:")
+for level, params in best_gb_params.items():
+    print(f"{level}: {params}")
+
+# Comparar rendimiento de Random Forest y Gradient Boosting optimizados
+print("\nComparativa de modelos optimizados:")
+
+comparison_results = []
+
+for level_name, df in levels.items():
+    print(f"\nEvaluando modelos optimizados en {level_name}...")
+
+    # Preparar datos
+    X = df.drop(columns=['OrbitalType', 'RiskClass', 'ScientificPotential', 'Hazardous',
+                       'Close Approach Date', 'Orbiting Body', 'Orbit Determination Date',
+                       'Equinox'], errors='ignore')
+    y = df['OrbitalType']
+
+    # Dividir datos
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+
+    # Random Forest optimizado
+    rf_params = best_params[level_name]  # Usar los parámetros que encontraste antes
+    rf_model = RandomForestClassifier(**rf_params, random_state=42)
+    rf_model.fit(X_train, y_train)
+    rf_pred = rf_model.predict(X_test)
+    rf_accuracy = accuracy_score(y_test, rf_pred)
+    rf_mcc = matthews_corrcoef(y_test, rf_pred)
+
+    # Gradient Boosting optimizado
+    gb_params = best_gb_params[level_name]
+    gb_model = GradientBoostingClassifier(**gb_params, random_state=42)
+    gb_model.fit(X_train, y_train)
+    gb_pred = gb_model.predict(X_test)
+    gb_accuracy = accuracy_score(y_test, gb_pred)
+    gb_mcc = matthews_corrcoef(y_test, gb_pred)
+
+    # Guardar resultados
+    comparison_results.append({
+        'Level': level_name,
+        'Model': 'Random Forest (optimizado)',
+        'Accuracy': rf_accuracy,
+        'MCC': rf_mcc
+    })
+    comparison_results.append({
+        'Level': level_name,
+        'Model': 'Gradient Boosting (optimizado)',
+        'Accuracy': gb_accuracy,
+        'MCC': gb_mcc
+    })
+
+    print(f"Random Forest: Accuracy={rf_accuracy:.4f}, MCC={rf_mcc:.4f}")
+    print(f"Gradient Boosting: Accuracy={gb_accuracy:.4f}, MCC={gb_mcc:.4f}")
+
+# Convertir resultados a DataFrame
+comparison_df = pd.DataFrame(comparison_results)
+
+# Visualizar comparación
+plt.figure(figsize=(14, 8))
+sns.barplot(x='Level', y='Accuracy', hue='Model', data=comparison_df)
+plt.title('Comparación de Modelos Optimizados por Nivel de Dificultad', fontsize=16)
+plt.xlabel('Nivel de Dificultad', fontsize=14)
+plt.ylabel('Precisión', fontsize=14)
+plt.ylim(0, 1)
+plt.legend(title='Modelo')
+plt.tight_layout()
+plt.savefig('optimized_models_comparison.png')
+plt.show()
